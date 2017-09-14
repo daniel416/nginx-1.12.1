@@ -1,0 +1,57 @@
+
+HTTP过滤模块
+	对发送给用户的HTTP响应包做一些加工。
+
+	HTTP框架为HTTP请求的处理定义了11个阶段
+	typedef enum {
+		NGX_HTTP_POST_READ_PHASE =0,
+		NGX_HTTP_SERVER_REWRITE_PHASE,
+		NGX_HTTP_FIND_CONFIG_PHASE,
+		NGX_HTTP_REWRITE_PHASE,
+		NGX_HTTP_POST_REWRITE_PHASE,
+		NGX_HTTP_REACCESS_PHASE,
+		NGX_HTTP_ACCESS_PHASE,
+		NGX_HTTP_POST_ACCESS_PHASE,
+		NGX_HTTP_TRY_FILES_PHASE,
+		NGX_HTTP_CONTENT_PHASE,
+		NGX_HTTP_LOG_PHASE
+	} ngx_http_phases;
+	HTTP框架预先普通的HTTP处理模块介入其中7个阶段，
+	大部分HTTP模块都只在NGX_HTTP_CONTEST_PHASE阶段处理请求 在这一阶段处理请求有一个特点
+	HTTP模块由两种介入方法：
+		第一种方法是 任何一个HTTP模块会对多有用户请求产生作用。
+		第二种方法师 对URI匹配了nginx.conf中某系location表达式下的HTTP模块起作用。
+
+	HTTP过滤模块一个请求可以被多个模块处理。
+	gzip过滤模块可以把发送给用户的静态文件进行gzip压缩处理后再发出去。
+	image_filter这个第三方过滤模块可以将图片类的静态文件制作成压缩略图。
+	range过滤模块处理HTTPrange协议。
+	not_modify过滤模块处理请求中的浏览器缓存信息。
+
+	HTTP过滤模块，在普通请求处理完毕并调用ngx_http_send_header或者调用ngx_http_output_filter发送HTTP包体。
+
+HTTP过滤模块调用顺序
+	所有HTTP过滤模块组成一个单链表。
+		typedef ngx_int_t (*ngx_http_output_header_filter_pt)(ngx_http_request_t *r);
+		typedef ngx_int_t (*ngx_http_output_body_filter_pt)(ngx_http_request_t *r,
+															ngx_chain_t *chain);
+	当执行ngx_http_send_header发送HTTP头部时，就从ngx_http_top_header指针开始遍历所有http过滤模块。
+
+
+HTTP过滤模块开发步骤
+	1、确定源代码文件名称。
+	2、创建config脚本文件，当执行configure时将该目录添加进去。HTTP_FILTER_MODULES.
+	3、定义过滤模块 实现ngx_modules_t结构体。
+	4、处理感兴趣的配置项。
+	5、实现初始化， 初始化方法就是把本模块中HTTP头部的nginx_http_output_header_filter_pt方法插入到过滤链表的首部。
+	6、实现过滤头和过滤包体方法。
+
+HTTP过滤模块初始化
+	static ngx_http_output_header_filter_pt ngx_http_next_header_filter;
+	static ngx_http_output_body_filter_pt ngx_http_next_body_filter;
+	在每次初始化模块时，ngx_http_top_header_filter为当前过滤链表的头， 
+	将 ngx_http_next_header_filter = ngx_http_top_header_filter， 则指向了当前模块的下一个模块。
+	启动链表开始遍历只需要执行ngx_http_top_header_filter(r);
+
+
+
