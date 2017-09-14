@@ -1,0 +1,391 @@
+1、nginx
+	竞争对手：apache、lighttpd、tomcat、jetty、IIS，都是web服务器，都具备web服务器功能.
+	基本功能：基于rest架构风格，用统一的URI或URL进行访问，以浏览器作为客户端提供各种网络服务。
+	不同：受用户规模、网络带宽，产品特点等，各自定位和发展方向不同各自有自身特点。
+
+	tomcat和jetty面向java，重量级web服务器。
+	IIS是windows下的web服务器，在稳定性上不如nginx。
+	appache 许多优点稳定、开源、跨平台。作为第一大web服务器。
+		总量级、不支持高并发的Web服务器，在Apache服务器上，如果数以万计的并发HTTP请求访问，服务器消耗大量内存，进程做进程间切换消耗CPU资源，导致HTTP请求的平均响应速度降低。
+
+	lighttpd和nginx都是轻量级、高性能web服务器。
+
+	nginx特点：
+		基于事件驱动的架构能够处理百万级别的TCP连接，高度模块化的设计和可扩展性，第三方模块层出不穷，带来极佳的稳定性，因此被广泛用于大流量的网站上。
+		跨平台，利用操作系统特有的API来提高自己性能linux上epoll和sendfile的利用。
+		更快
+		高扩展性
+			由多个不同功能、不同层次、不同类型且耦合度极低的模块组成。对不同模块的修改不会相互影。
+		高可用性
+		低内存消耗
+		单机支持10万以上并发连接
+		热部署
+		开源
+
+		高并发需要带给用户良好的体验，热点事情的处理。
+
+
+		准备工作：
+			1、源码		nginx-1.9.2
+			2、编译工具	 gcc  gcc-c++ zlib openssl
+			直接yum install 安装
+			3、 linux内核参数优化， 默认linux参数不支持高并发。
+				/etc/sysctl.conf来修改内核参数, 具体参照网上介绍。
+					net.ipv4.tcp_max_tw_buckets = 6000  //timewait的数量，默认是180000。
+					net.ipv4.ip_local_port_range = 1024 65000 //允许系统打开的端口范围。
+					net.ipv4.tcp_tw_recycle = 1 //启用timewait快速回收。
+					net.ipv4.tcp_tw_reuse = 1 //开启重用。允许将TIME-WAIT sockets重新用于新的TCP连接。
+					net.ipv4.tcp_syncookies = 1
+			编译
+			./configure
+			make &makeintall
+			全部默认编译，模块可配置 --add-module=./dir  添加自己的模块。
+			具体可以--help查看。
+			除核心代码外，nginx完全是由各种功能模块组成，这些模块由配置参数决定。
+			事件模块 --epoll select aio poll   
+			默认编译HTTP模块模块
+			默认不编译HTTP模块
+			邮件代理
+			其他模块
+
+			--with-XXXXX-module 添加默认不编译的模块
+			--without-XXXX-module 排除默认编译
+
+			objs结构如下：
+			├── addon
+			│   ├── mytest_config
+			│   ├── my_test_module
+			│   ├── mytest_subrequest
+			│   ├── mytest_upstream
+			│   ├── nginx-requestkey-module-master
+			│   ├── ngx_http_myfilter_module
+			│   ├── sendfile_test
+			│   └── src
+			├── autoconf.err
+			├── Makefile
+			├── nginx
+			├── nginx.8
+			├── ngx_auto_config.h
+			├── ngx_auto_headers.h
+			├── ngx_modules.c
+			└── src  
+			    ├── core
+			    ├── event
+			    │   └── modules
+			    ├── http
+			    │   ├── modules
+			    │   │   └── perl
+			    │   └── v2
+			    ├── mail
+			    ├── misc
+			    ├── os
+			    │   ├── unix
+			    │   └── win32
+			    └── stream
+			src目录用于存放编译的目标文件
+			Makefile文件编译nginx工厂
+			.err保存错误
+			.h保存了一下宏，宏判断代码是否编译
+			ngx_modules.c是一个关键文件结构， 使我们所有的模块， 模块有点急，当一个请求同时符合多个模块处理规则时， 将按照他们在ngx_modules数组中的顺序选择最靠前的模块优先处理。HTTP模块则相反
+
+			生成Makefile，生成ngx_modulees.c文件，对不需要的模块不会加入ngx_modules数组，也不会编译进nginx产品中。
+
+	Nginx提供大量命令控制
+		-c /tmp/nginx.conf
+		指定配置文件， 否则会使用默认配置文件
+		-g "pid /var/nginx/test.pid" -s stop
+		指定进程ID存放文件，判断进程是否存在使用，退出进程
+		-t 
+		测试配置文件是否正确
+		-q
+		只输出error级别信息
+		-V
+		系统版本信息 编译参数
+
+		[root@localhost nginx-1.9.2]# ps -ef | grep nginx     
+
+		快速停止服务
+			-s stop 可以强制停止Nginx服务，nginx通过nginx.pid文件中得到master进程的进程ID，再想master进程发送TERM信号来关闭， 测试如下：   
+				root     31391     1  0 22:22 ?        00:00:00 nginx: master process /usr/local/nginx/sbin/nginx
+				nobody   31392 31391  0 22:22 ?        00:00:00 nginx: worker process
+				root     31394 30871  0 22:22 pts/0    00:00:00 grep --color=auto nginx
+				[root@localhost nginx-1.9.2]# 
+				[root@localhost nginx-1.9.2]# 
+				[root@localhost nginx-1.9.2]# 
+				[root@localhost nginx-1.9.2]# kill -s sigterm  31391 
+				[root@localhost nginx-1.9.2]# ps -ef | grep nginx   
+				root     31397 30871  0 22:23 pts/0    00:00:00 grep --color=auto nginx
+				[root@localhost nginx-1.9.2]# 
+			优雅关闭
+				-s quit
+				worker处理完所有请求后推出。
+				-s reload
+				从新加载nginx.conf
+				nginx先检查新的配置项是否有错误，如果全部正确就以“优雅”的方式关闭，再从新启动ngxin来实现这个目的。
+				-s reopen 重新打开日志文件。
+
+				平滑升级不影响nginx提供的web服务
+				升级要完成的事情：替换ngxin程序，加载新的nginx.conf同时不影响nginx服务
+
+				nginx：
+					1、通过旧版本的nginx准备升 通过自定义信号USR2
+						kill -s SIGUSR2 <nginx master pid>
+					2、旧的nginx程序将pid文件重命名， 新的nginx可以启动成功。
+					3、通过kill想master发送 SIGQUIT信号，以“优雅”的方式关闭旧版本nginx。
+
+					问题：端口绑定问题，重命名实现流程。日志不会相互影响
+
+	master 管理worker，
+	worker 多个进程，处理请求， 共享内存， 原子操作等进程通信机制。
+			linux同一个进程可以通过pthread_lock系列操作实现多线程操作， 多进程实现mmap 共享内存，内存结构中存放包含pthread_lock结构体，实现进程同步？负载均衡机制。
+			还需要进一步确认细节。
+
+			apache，每个进程在一个时刻只能处理一个请求，所以需要一台服务器通常有几百个工作进程，但是只有几个cpu，linux时间片机制，需要进程之前切，更多CPU时间浪费在进程切换。
+
+			nginx：包含cpu数量的work进程，一个worker可以同时处理与内存相关个请求（大并发导致响应比较慢），但是cpu不会进程间切换，充分利用cpu。
+
+				[root@localhost nginx-1.9.2]# cat /usr/local/nginx/conf/nginx.conf
+					#user  nobody;
+					worker_processes  1;
+
+					#error_log  logs/error.log;
+					#error_log  logs/error.log  notice;
+					#error_log  logs/error.log  info;
+
+					#pid        logs/nginx.pid;
+
+
+					events {
+					    worker_connections  1024;
+					}
+
+
+					http {
+					    include       mime.types;
+					    default_type  application/octet-stream;
+
+					    #log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+					    #                  '$status $body_bytes_sent "$http_referer" '
+					    #                  '"$http_user_agent" "$http_x_forwarded_for"';
+
+					    #access_log  logs/access.log  main;
+
+					    sendfile        on;
+					    #tcp_nopush     on;
+
+					    #keepalive_timeout  0;
+					    keepalive_timeout  65;
+
+					    #gzip  on;
+
+					    server {
+					        listen       80;
+					        server_name  localhost;
+
+					        #charset koi8-r;
+
+					        #access_log  logs/host.access.log  main;
+
+					        location / {
+					            root   html;
+					            index  index.html index.htm;
+					        }
+
+					        #error_page  404              /404.html;
+
+					        # redirect server error pages to the static page /50x.html
+					        #
+					        error_page   500 502 503 504  /50x.html;
+					        location = /50x.html {
+					            root   html;
+					        }
+
+					        # proxy the PHP scripts to Apache listening on 127.0.0.1:80
+					        #
+					        #location ~ \.php$ {
+					        #    proxy_pass   http://127.0.0.1;
+					        #}
+
+					        # pass the PHP scripts to FastCGI server listening on 127.0.0.1:9000
+					        #
+					        #location ~ \.php$ {
+					        #    root           html;
+					        #    fastcgi_pass   127.0.0.1:9000;
+					        #    fastcgi_index  index.php;
+					        #    fastcgi_param  SCRIPT_FILENAME  /scripts$fastcgi_script_name;
+					        #    include        fastcgi_params;
+					        #}
+
+					        # deny access to .htaccess files, if Apache's document root
+					        # concurs with nginx's one
+					        #
+					        #location ~ /\.ht {
+					        #    deny  all;
+					        #}
+					    }
+
+
+					    # another virtual host using mix of IP-, name-, and port-based configuration
+					    #
+					    #server {
+					    #    listen       8000;
+					    #    listen       somename:8080;
+					    #    server_name  somename  alias  another.alias;
+
+					    #    location / {
+					    #        root   html;
+					    #        index  index.html index.htm;
+					    #    }
+					    #}
+
+
+					    # HTTPS server
+					    #
+					    #server {
+					    #    listen       443 ssl;
+					    #    server_name  localhost;
+
+					    #    ssl_certificate      cert.pem;
+					    #    ssl_certificate_key  cert.key;
+
+					    #    ssl_session_cache    shared:SSL:1m;
+					    #    ssl_session_timeout  5m;
+
+					    #    ssl_ciphers  HIGH:!aNULL:!MD5;
+					    #    ssl_prefer_server_ciphers  on;
+
+					    #    location / {
+					    #        root   html;
+					    #        index  index.html index.htm;
+					    #    }
+					    #}
+
+					}
+	模块event
+	http {
+		server {
+			listen       80;
+			server_name  localhost;
+			location /test {
+				root   html;
+				index  index.html index.htm;
+			};
+			......
+		};
+		........
+	};
+	内层块继承外层的配置项， 配置项允许相同， 内外层相同调用模块merge函数，
+	配置项的解析， 需要模块实现配置项解析
+
+	用于调试进程和定位为题的配置项
+	daemon on | off
+	默认on， 即以守护进程方式打开，调试追踪问题时可以使用 off，前台运行。
+	问题追踪：1、nginx日志分析。 2、nginx调整日志级别。 3、使用负载均衡， 对部分nginx进行升级，添加打印，平滑升级。
+
+	master_process on | off
+	是否以master方式运行， off不会创建子进程。
+
+	error 日志设置。
+	/path/file 如果/dev/null 则是关闭
+	error.log 记录日志分析问题
+	stderr 标准错误文件中
+
+	日志级别： debug、info、notice、warn、error、crit、alter、emerg
+
+	使用debug 必须在configer时加入 --with-debug
+	debug_points [stop | abort]
+	参照gdb 断点
+
+	5、debug_connection [IP | CIDR]
+	connect 时间输出debug级别日志
+	events {
+		debug_connection 192.168.66.14;
+		debug_connection 192.168.66.0/24;
+	}
+	调试线上问题或过滤IP地址， 对特定IP进行调试。
+
+	worker_process number
+	worker_cpu_affinity_cpumask 绑定work到CPU 如何实现。nginx为什么高效原因之一：
+
+	timer_resolution t;
+	调用gettimeofday频率
+
+	accept_mutex [on| off]
+
+	accept_mutex_delay nums
+	获取不到锁后，延迟多少秒获取锁
+	lock_file path
+
+	虚拟主机与请求的分发
+	default 默认server块， 当一个请求无法匹配配置文件中的所有主机域名时，就会选用默认的虚拟主机
+	default_server：同事
+	backlog=num
+	设置TCP中backlog队列的大小，默认为-2，表示不予设置， 在TCP三次握手过程中，进程还没有开始监听句柄，bocklog队列将放置这些新连接，如果backlog队列已满，就会建立连接失败。
+	recbuf=size：
+	sndbuf=size：
+	accept_filter：设置accept过滤器。
+	deferred：只有数据到来才会开始处理。
+	bind：绑定端口地址
+	ssl： 基于ssl协议
+
+	server_name name
+	在开始处理一个http请求时，nginx会取出header头中的host与每个server的server_name进行匹配， 以此决定由哪个server块来处理。
+	location：
+	location会尝试根据用户请求中的URI来匹配上面的/uri表达式，如果可以匹配成功就选择location{}处理用户请求。
+	匹配规则：
+		= 完全匹配
+		~表示URI是字母大小写敏感的
+		~*表示匹配URL时忽略字母大小写问题。
+		^~表示只需要前半部分与URI匹配
+	location /download {
+		root /opt/web/html;
+	}
+	在上面配置中，如果有请求的URI是download/index/test.html那么Web服务器将返回/opt/web/html/download/index/test.html文件内容
+
+	alias方式与root区别
+	alias 直接替换location
+	root  包含location提供路径。
+
+	error_page code
+	虽然重定向了URI，但是返回的HTTP错误码还是与原来的相同
+
+	网络连接超时
+	client_header_timeout time
+	client_body_timeout 
+	reset_timeout_connection
+	lingering_close
+
+	反向代理reverse proxy方式是指用http代理服务器来接受Internet上的连接请求，并将请求转发给内部网络中的上游服务器。
+
+	nginx具有高并发负载能力，因此一般会作为前端的服务器指向向客户端提供静态文件服务，
+	有一些复杂，多变的业务不适合放在Nginx服务器上（阻塞任务）可以通过apache，tomcat等服务器来处理。
+	负载均衡方案包括按照IP地址做散列等。
+
+	代理服务器流程：
+		客户端发来HTTP请求，nginx并不会立即转发到上游服务器，而是先把用户的请求完整地接收到nginx所在服务器或内存中，然后再向上游服务器发起连接。
+		优点：降低上游服务器的负载。 缺点增加了用于缓存请求内容的内存和磁盘空间，延长处理请求时间。
+	upstream 块 {
+		server xx1.com;
+		server xx2.com;
+		server xx3.com;
+	}
+	server {
+		location / {
+			proxy_pass http://backend;
+			
+		}
+	}
+
+
+
+	
+
+
+
+
+
+
+
+
+
+

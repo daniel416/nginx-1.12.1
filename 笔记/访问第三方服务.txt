@@ -1,0 +1,191 @@
+访问第三方服务
+	Nginx提供了两种全异步方式来与第三方服务通信：upstream和subrequest
+
+	upstream可以保证在与第三方服务器交互时(三次握手建立TCP连接，发送请求、接收响应、四次握手关闭TCP连接等)不会阻塞Nginx进程其他请求。upstream访问上游服务器，nginx作为代理服务器。首要功能是透传，其次才是以TCP获取第三方服务器内容。
+
+	subrequest是分解复杂请求的一种设计模式，它本质上与访问第三方服务没有任何关系，subrequest将为客户请求创建子请求。每个子请求负责一个功能而最初的原始请求负责构成并发送响应给客户端。
+
+	反向代理模块时先接收完客户请求的HTTP包体后，才向上游服务器建立连接并转发请求的。
+	upstream提供8个回调方法，用户只需要根据需求实现其中的几个回调方法就可以
+
+	struct ngx_http_request_s {
+		ngx_http_upstream_t *upstream;
+	}
+
+一个HTTP请求到来我们如何使用upstream功能呢？
+	1、ngx_http_upstream_create方法来创建upstream。
+	2、设置上游服务器地址，通过ngxin.conf获取。
+	3、设置回调方法。
+	4、 调用ngx_http_upstream_init方法即可开启upstream机制，ngx_http_myfirst_handler必须返回NGX_DONE，要求nginx不要继续向下处理。
+
+	upstream提供三种处理上游服务器包体的方式，包括由HTTP模块使用input_filter回调方法直接处理包体、以固定缓冲区转发包体、以多个缓冲区加磁盘文件的方式转发包体。
+
+	调用ngx_init_upstream_init 后upstream处理流程
+		1、create_request创建发往上游的请求
+		2、使用无阻塞套接字建立TCP连接并等待建立成功(异步)
+		3、发送请求到第三方服务(异步)
+		4、接收第三方返回包头 process_header处理包头(是否接受完整)
+		5、接收第三发返回的包体 进行处理
+		6、回调finalize_request并销毁请求
+
+ngx_http_upstream_t结构体
+	struct ngx_http_upstream_s {
+		//发送什么样的请求给上游服务器，在实现create_request方法时需要设置它
+		ngx_chain_t		*request_bufs;
+		ngx_http_upstream_conf_t *conf;
+		ngx_http_upstream_resolved_t *resolved;
+		ngx_buf_t 			buffer;
+
+		ngx_int_t (*create_request)(ngx_http_request_t *r);
+		ngc_int_t (*finalize_request) (ngx_http_request_t *r ngx_int_t rc);
+
+		unsinged			ssl:1
+		unsinged			buffering:1
+
+
+	}
+	http_http_request_t结构体中的  subrequest_in_memory决定采用什么方式处理包体
+	subrequest_in_memory标志位为1时：upstream不转发响应包体到下游，由HTTP模块实现input_filter方法处理包体。
+
+	subrequest_in_memory为0时，转发响应包体，由buffering决定采用是否本地文件缓存。
+
+	回调方法：
+		必须实现： create_request,process_header,finalize_request
+		可选：input_filter_init、input_filter、reinit_request、abort_request、rewrite_redirect、
+
+	upstream限制属性参数
+		typedef struct {
+			ngx_msec_t		connect_timeout;//连接超时时间
+			ngx_msec_t 		send_timeout;//发送超时时间
+			ngx_msec_t		read_timeout;//接收超时时间
+			......
+		} ngx_http_upstream_conf_t;
+
+		nginx.conf文件提供的配置项大豆是用来设置ngx_http_upstream_conf_t结构体成员
+		而上面3个超时时间必须要设置，否则默认为0，不设置永远无法与上游服务器建立起TCP连接。
+
+	upstream服务器地址
+		resloved成员可以直接设置上游服务器的地址。
+		typedef struct {
+			ngx_uint_t	naddrs;
+			struct sockaddr	*sockaddr;
+			socklen_t		socklen;
+		} ngx_http_upstream_resolved_t;
+		必须设置上面3个参数。
+
+	启动upstream机制
+	static ngx_int_t ngx_http_myfirst_handler(ngx_http_request_t *r) 
+	{
+		r->main->count++;
+		ngx_http_upstream_init(r);
+		return NGX_DONE;
+	}
+	使用r->main->count++;高速HTTP框架将当前请求的引用计数加1,不该请求不会被销毁
+
+
+	回调方法
+		create_request回调场景
+			1、检查用于文件缓存的文件。
+			2、调用create_request回调方法
+			3 、在myfirst模块通过设置r->upstream->request_bufs已经决定好发送什么
+			4、检查resloved成员，设置上有服务器地址r->upstream->peer。
+			5、用无阻塞TCP套接字建立连接，connect方法立即返回
+			6、ngx_http_upstream_init返回
+			7、myfirst模块handler返回NGX_DONE， 计数器+1.
+			8、事件模块处理这批网络事件请求。返回nginx主循环。
+
+		reinit_request回调方法
+			用于连接失败后，重来，根据upstream中conf参数的策略再次请求上游服务器
+			1、nginx主循环会定期调用事件模块，检查是否有网络事件发生
+			2、事件模块在确定与上游服务器的TCP连接成功后，会调用upstream模块的相关处理方法。
+			3、设置r->upstream->request_sent标志位1，表示连接已经建立成功，开始发送请求内容。
+			4、无阻塞发送请求到上游服务器。
+			5、返回第2步，事件处理函数，将控制权交还给ngxin主循环。
+			6、如果发现TCP连接异常断开。
+			7、在符合重试的前提下，再次无阻塞建立连接。
+			8、检查r->upstream->request_sent标志是否为1.
+
+		finalize_request回调方法
+			无论成功或失败都回调用finalize_request方法，必须实现。
+
+		process_header回调方法
+			解析上游服务器返回的基于TCP的响应头部。调用次数与process_header返回值有关，如果是NGX_AGAIN表示还未接收到完整的响应头部。
+			NGX_OK表示接受到完整的头部，不会再调用process_header。
+			1、调用事件模块。
+			2、事件模块接收到上游服务器发来的响应时，会调用upstream处理。
+			3、从套接字缓冲区读取来自上游的TCP流
+			4、数据存入r->upstream->buffer指向的内存中，在解析上游响应包头时，如果buffer缓冲区全满还没有解析到完整的响应头部。那么请求就会出错。
+			5、调用process_header方法解析r->upstream->buffer缓冲区，试图从中得到完整的HTTP头部。
+
+		rewrite_redirect回调方法
+			重定向，解析完header，解析出对应Location头部并设置到ngx_http_upstream_t 的headers_in成员时调用
+
+		input_filter_init 和input_filter
+
+
+
+subrequest的使用方式
+	subrequest是由HTTP框架提供的一种分解复杂请求的设计模式，它可以把原始请求分解为许多子请求，使得诸多请求协同完成一个用户请求，并且每个请求值关注于一个功能。
+
+	只要不是完全将上游服务的响应包体转发到下游客户端，基本上会使用subrequest创建子请求，并由子请求使用upstream机制访问上游服务器，然后由父请求根据上游响应重新构造返回给下游客户端的响应。
+
+	subrequest设计的基础是生成一个请求的代价要非常小，消耗的内存也要很少，并且不会一直占用进程资源。因此每个请求都应该做简单、独立的工作，而由多个子请求合成一个父请求向客户端提供完整的服务。
+
+	subrequest使用步骤：
+		1、nginx.conf文件中配置好子请求的处理方式
+		2、启动subrequest子请求。
+		3、实现子请求执行结束的回调方法。
+		4、实现父请求被激活时的回调方法。
+
+
+	配置子请求的处理方式
+		本例以访问第三方服务为例，因此使用ngx_http_proxy_module反向代理模块来处理子请求。
+		location /list {
+			proxy_pass http://hq.sinajs.com
+			proxy_set_header Accept-Encoding "";
+		}
+		生成的子请求以URI/list开头的请求，使用ngx_http_proxy_module模块让子请求访问新浪服务器。
+		这样如果生产的子请求以/list开头。就会使用反向代理模块去访问新浪服务器、
+
+		typedef ngx_int_t (*ngx_http_post_subrequest_pt)(ngx_http_request_t *r, void *data, ngx_int_t rc);
+		rc 为自清在结束时的状态，它的取值则是执行ngx_http_finalize_request的参数。
+		
+		void ngx_http_finalize_request(ngx_http_request_t *r, ngx_int_t rc) 
+		{
+			if( r != r->main && r->post_subrequest) {
+				rc= r->post_subrequest->handler(r, r->post_subrequest->data, rc);
+			}
+		}
+
+	子请求处理流程
+		1、mytest模块ngx_http_mytest_handler方法处理请求。
+		2、设置subrequest子请求的URI
+		3、调用ngx_http_subrequest方法创建子请求。
+		4、创建的子清酒会添加到原始请求的post_requests链表中，在父请求NGX_DONE情况下开始执行子请求。
+		5、ngx_http_subrequest方法执行完毕，子请求创建成功。
+		6、返回NGX_DONE，这样父请求不会被销毁。
+		7、检查post_requests链表，如果存在子请求调用write_event_handler,根据子请求的URI检查由哪个模块来执行子请求。
+		8、 调用配置模块入口函数ngx_http_proxy_handler来处理子请求。
+		9、由于upstream机制处理。
+
+	如何转发多个子请求的响应包体
+		ngx_http_postpone_filter_module过滤模块实际上是为了subrequest功能建立的
+
+		
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

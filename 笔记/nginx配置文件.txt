@@ -1,0 +1,64 @@
+配置
+	nginx为用户提供了一套强大的配置项解析机制。 支持 -s reload
+
+	定位线上代码问题 nginx输出日志方法
+
+	nginx全异步模块 上下文机制。
+
+
+
+1、http配置项可以分为下面4个步骤
+	1、创建数据结构用于存储配置项对应的参数
+	2、设置配置项在nginx.conf中出现的限制条件和回调方法。
+	3、实现第二部中的回调方法或者使用nginx框架预设的14个回调方法
+	4、合并不同级别的配置块中出现的同名配置块。
+
+	HTTP模块感兴趣的配置项需要统一地使用一个struct结构来保存，如果有多个server，location，http那么这个结构体在nginx就会存在多份实例。
+
+	create_main_conf/create_srv_conf/create_loc_conf三个回调方法负责把我们分配的用于保存配置项的结构体传递给HTTP框架
+
+
+	1、ngx_conf_set_flag_slot on | off 
+	2、ngx_conf_set_str_slot
+	3、ngx_conf_set_str_array_slot
+	4、ngx_conf_set_keyval_slot     test_keyval contest-type image/png
+	5、ngx_conf_set_num_slot
+	6、ngx_conf_set_size_slot
+	7、ngx_conf_set_off_slot
+	8、ngx_conf_set_msec_slot
+	9、ngx_conf_set_sec_slot
+	10、ngx_conf_set_bufs_slot
+	11、ngx_conf_set_enum_slot
+	12、ngx_conf_set_bitmask_slot
+	13、ngx_conf_set_access_slot
+	14、ngx_conf_set_path_slot
+
+当检测到http{}是创建ngx_http_conf_ctx_t结构
+typedef struct {
+	void **main_conf;
+	void **srv_conf;
+	void **loc_conf;
+}
+
+
+
+日志
+	ngx_log_debug(level, log,  args ....)	level 代表模块
+	ngx_log_error(level, log,  args ....) level 代表日志级别
+
+	struct ngx_log_s {
+		ngx_uint_t log_level;
+		ngx_open_file_t *file;
+		ngx_atomic_uint_t connection;
+		ngx_log_handler_pt handler;
+		void *data
+		char *action;
+	}
+
+上下文
+	nginx为每个请求在每个模块都可以这种改模块每次使用的上下文结构体
+	ngx_http_get_module_ctx(r, modlue)
+	ngx_http_set_module_ctx
+	原因：在每个request都维护着一个max_module大小的指针数组。
+
+

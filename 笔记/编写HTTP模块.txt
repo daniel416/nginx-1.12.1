@@ -1,0 +1,426 @@
+
+1、config 文件的写法
+	ngx_addon_name:仅在configure执行时使用，模块名
+	HTTP_MODULES： 所有HTTP模块的名字$HTTP_MOUDLES
+	NGX_ADDON_SRCS：
+	. auto/modules
+	. auto/make
+	在执行./configure --add-module=/PATH 命令时，PATH为第三方模块所在的路径，在configure中通过 auto/options设置成NGX_ADDONS变量
+	if test -n "$NGX_ADDONS"; then 
+		echo confiuuring additional modules
+		for ngx_addon_dif in $NGX_ADDONS
+		do
+			if test -f $ngx_addon_dir/config; then
+				. $ngx_addon_dir/config
+			else 
+				exit 1
+			fi
+		done
+	fi
+
+	$NGX_ADDONS可以包含多个目录，如果目录中存在config文件就会执行
+	auto/modules 脚本开始创建ngx_modules.c 这个文件关键点就是定义了ngx_module_t *ngx_modules[]数组
+	ngxin在初始化，处理请求时都会循环访问ngx_modules数组， 确定该用哪一个模块来处理
+
+	modules="$CORE_MODULES $EVENT_MODULES"
+	if [ $USE_OPENSSL = YES ]; then
+		modules="$modules $OPENSSL_MODULES"
+		CORE_DEPS="$CORE_DEPS $OPENSSL_DEPS"
+		CORE_SRCS="$CORE_SRCS $OPENSSL_SRCS"
+	fi
+	if [ $HTTP = YES]; then
+		modules="$modules $HTTP_MODULES $HTTP_FILTER_MODULES \
+				$HTTP_HEADERS_FILTER_MODULES \
+				$HTTP_AUX_FILTER_MODULES \
+				$HTTP_COPY_FILTER_MODULES \
+				$HTTP_RANGE_BODY_FILTER_MODULES \
+				$HTTP_NIT_MODIFIED_FILTER_MODULES"
+		NGX_ADDON_DEPS="$NGX_ADDON_DEPS \$(HTTP_DEPS)"
+	fi
+	首先生成modules变量，modules变量包含了所有模块。
+	脚本会按照modules顺序生成ngx_module_t  数组。
+
+	而MAKEFILE负责编译第三方源代码，和NGX_ADDON_SRCS有关。
+	遍历NGX_ADDON_SRCS中文件生成obj目标
+	最后根据obj生成二进制程序
+
+	总结：--add_module=/PATH, 在auto/options进行变量对应目录的config
+		  auto/modules 生成ngx_modules.c
+		  auto/make 生成makefile
+
+2、模块代码
+	后面详细介绍
+3、conf 文件定义
+	localtion /first {
+		first;
+	}
+	first 为模块代码ngx_command_t中name字段， ngx_http_module_t定义main、server、location解析和合并函数
+4、编译 -add-module=./src/daniel_first_module
+
+
+
+通过configur程序已经有每个模块的信息ngx_module_t ，如果要新加入模块myfirst，那么我们需要定义一个ngx_module_t 并进行初始化。
+
+		struct ngx_module_s {
+		    ngx_uint_t            ctx_index;
+		    ngx_uint_t            index;
+
+		    char                 *name;
+
+		    ngx_uint_t            spare0;
+		    ngx_uint_t            spare1;
+
+		    ngx_uint_t            version;
+		    const char           *signature;
+
+		    void                 *ctx;
+		    ngx_command_t        *commands;
+		    ngx_uint_t            type;
+
+		    ngx_int_t           (*init_master)(ngx_log_t *log);
+
+		    ngx_int_t           (*init_module)(ngx_cycle_t *cycle);
+
+		    ngx_int_t           (*init_process)(ngx_cycle_t *cycle);
+		    ngx_int_t           (*init_thread)(ngx_cycle_t *cycle);
+		    void                (*exit_thread)(ngx_cycle_t *cycle);
+		    void                (*exit_process)(ngx_cycle_t *cycle);
+
+		    void                (*exit_master)(ngx_cycle_t *cycle);
+
+		    uintptr_t             spare_hook0;
+		    uintptr_t             spare_hook1;
+		    uintptr_t             spare_hook2;
+		    uintptr_t             spare_hook3;
+		    uintptr_t             spare_hook4;
+		    uintptr_t             spare_hook5;
+		    uintptr_t             spare_hook6;
+		    uintptr_t             spare_hook7;
+		};
+
+		ngx_module_t ngx_http_myfirst;
+		ngx_http_myfirst.ctx =?
+		ngx_http_myfirst.commands=?
+		简写
+		ngx_module_t ngx_http_myfirst = {
+			NGX_MODULE_V1,  
+		    &ngx_http_first_module_ctx,  
+		    ngx_http_first_commands,  
+		    NGX_HTTP_MODULE,  
+		    NULL,  
+		    NULL,  
+		    NULL,  
+		    NULL,  
+		    NULL,  
+		    NULL,  
+		    NULL,  
+		    NGX_MODULE_V1_PADDING  
+		};
+
+	NGX_MODULE_V1 宏统一给ctx_index,index,spare0.......等进行复制
+	#define NGX_MODULE_V1 0,0,0,0,0,0,1
+	ctx_index由核心模块ngx_http_modules设置，这个值很重要，在程序中固定，优先级和模块位置
+	index表示模块的序号，nginx启动时进行赋值。
+	spare系列暂未使用
+	version表示版本。
+	ctx指向模块上下文结构， 各模块功能不同ctx不相同HTTP类型只要处理HTTP应用层功能EVENT的模块主要处理I/O事件相关功能
+	ngx_command_t *commands；nginx.conf中配置项
+	ngx_uint_t type; 模块类别NGX_HTTP_MODULE,NGX_CORE_MODULE,NGX_CONF_MODULE,NGX_EVENT_MODULES,NGX_MAIL_MODULE.
+
+	 	ngx_int_t           (*init_master)(ngx_log_t *log);
+		ngx_int_t           (*init_module)(ngx_cycle_t *cycle);
+		ngx_int_t           (*init_process)(ngx_cycle_t *cycle);
+		ngx_int_t           (*init_thread)(ngx_cycle_t *cycle);
+		void                (*exit_thread)(ngx_cycle_t *cycle);
+		void                (*exit_process)(ngx_cycle_t *cycle);
+		void                (*exit_master)(ngx_cycle_t *cycle);
+	nginx的启动、停止过程中，以上7个函数指针表示有7个执行点调用这7种方法
+	init_master：暂时不调用，在master启动时
+	init_module：启动worker子进程前
+	init_process：子进程初始化过程调用
+	init_thread：不支持多线程
+	exit_process：服务停止前调用
+	exit_master：master退出前
+
+	最重两个结构体ctx和commands
+	NGX_HTTP_MODULE 中commands必须指向ngx_http_modules_t，HTTP核心模块在初始化模块时使用
+	ngx_http_module_t接口描述8个阶段 读取 重载。
+
+
+	typedef struct {
+		//解析配置之前
+	    ngx_int_t   (*preconfiguration)(ngx_conf_t *cf);
+	    //完成配置文件解析
+	    ngx_int_t   (*postconfiguration)(ngx_conf_t *cf);
+	    //当需要创建数据结构用于存储main级别http{}块配置项
+	    void       *(*create_main_conf)(ngx_conf_t *cf);
+	    //初始化main级别配置项
+	    char       *(*init_main_conf)(ngx_conf_t *cf, void *conf);
+	    //创建用于存储srv server{}块
+	    void       *(*create_srv_conf)(ngx_conf_t *cf);
+	    //合并main级别srv同名配置项处理方法
+	    char       *(*merge_srv_conf)(ngx_conf_t *cf, void *prev, void *conf);
+
+	    //创建用于存储loc location{}块和合并方法
+	    void       *(*create_loc_conf)(ngx_conf_t *cf);
+	    char       *(*merge_loc_conf)(ngx_conf_t *cf, void *prev, void *conf);
+	} ngx_http_module_t;
+
+
+	struct ngx_command_s {
+	    ngx_str_t             name;
+	    ngx_uint_t            type;
+	    char               *(*set)(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+	    ngx_uint_t            conf;
+	    ngx_uint_t            offset;
+	    void                 *post;
+	};
+	commands数组用于定义模块配置文件参数，没一个数组元素都是ngx_command_t类型，ngx_null_command表示结束，nginx在
+	一个HTTP请求会被多个配置项控制，实际上一个HTTP请求可以被多个HTTP模块处理。
+	1 不希望模块对所有的HTTP请求作用
+	2 ngxin.conf文件中http{} server{}和location{}块内定义mytest配置项，如果一个用户请求通过主机域名，URI等匹配上响应的配置块， 而这个配置块下又具有myfirst配置项，
+
+
+	nginx定义全局错误码
+		在NGX_HTTP_CONTENT_PHASE阶段调用handler后处理流程
+		if (r->content_handler) {
+			r->write_event_handler = ngx_http_request_empty_handler;
+			ngx_http_finalize_request(r, r->content_handler(r));
+
+			return NGX_OK;
+		}
+		NGX_OK：表示成功，nginx继续执行该请求后续动作
+		NGX_DECLINED：寻找下一个对该请求感兴趣的HTTP模块
+		NGX_DONE：到此为止，交还nginx控制权，等下一次资源满足时调用
+		NGX_ERROR：表示错误。
+
+		ngx_http_request_t 参数类型
+		struct ngx_http_request_s {
+
+		};
+		1、方法名
+			method的类型时ngx_uint_t解析完用户请求后得到的方法
+			当要了解用户请求中的HTTP方法时， 使用r->method 与宏进行比较比字符串比较效率高很多
+			建议其他情况也可以按照这种方式使用
+			request_start request_end指向用户请求的地址
+			URL
+			ngx_str_t uri指向用户请求中的URI。
+			URL参数
+			arg指向用户请求中的URL参数
+			args_start 指向URL参数的起始地址
+			协议版本
+			http_protocol 指向用户请求中HTTP其实地址
+			http_version是nginx解析过的协议版本，它的取值范围如下
+
+		获取HTTP头部
+			struct ngx_http_request_s {
+				ngx_buf_t *header_in;
+				ngx_http_headers_in_s headers_in;
+			}
+			header_in指向Nginx收到的未经解析的HTTP头部，
+			ngx_http_headers_in_t类型的headers_in则存储已经解析过的HTTP头部
+
+		获取HTTP包体
+			http包体的长度有可能非常大，若果试图一次性调用并读取完所有的包体那么多半会阻塞nginx进程，HTTP框架提供一种方法来异步地接受包体
+
+
+		方法一： 
+			ngx_int_t ngx_http_read_client_request_body(ngx_http_request_t *r, ngx_http_client_body_handler_pt post_handler);
+			表示nginx开始接收请求的包体，并不表示已经接受完，当接收完所有的包体后，post_handler指向的回调方法被调用
+			ngx_int_t rc = ngx_http_read_client_request_body(r, ngx_http_myfirst_body_handler);
+			if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+				return rc;
+			}
+			// do task
+
+		方法二：
+			不想处理请求中的包体，那么可以调用ngx_http_discard_request_body方法将接受自客户端的HTTP包体丢弃掉。
+			ngx_int_t rc = ngx_http_discard_request_body(r);
+			if (rc != NGX_OK) {
+				return rc;
+			}
+			为什么要接收后丢弃，不直接不接收， 应为不接收有可能导致客户端发送超时。
+
+		发送响应
+			HTTP响应包括响应行，响应头部、包体三部分
+
+
+			发送
+			ngx_int_t rc = ngx_http_send_header(r);
+			if (rc == NGX_ERROR || RC > NGX_OK || r->header_only) {
+				return rc;
+			}
+
+			struct ngx_http_request_s {
+				ngx_http_header_in_t headers_in;
+				ngx_http_header_out_t headers_out;
+			};
+
+
+			typedef struct {
+				ngx_list_t headers;
+				ngx_uint_t status;
+				ngx_str_t state_line;
+
+				ngx_table_elt_t   *server;
+				ngx_table_elt_t 	*date;
+				ngx_table_elt_t		*content_length;
+				ngx_table_elt_t		*content_encoding;
+				ngx_table_elt_t		*location;
+
+				...........
+
+				//content
+				size_t contest_type_len;
+				ngx_str_t 	content_type;
+				ngx_str_t 	charset;
+				u_char		*content_type_lowcase;
+				ngx_uint_t封装无符号整型
+			} ngx_http_header_out_t;
+		在向headers链表添加自定义的HTTP头部时如下
+		ngx_table_elt_t* h = ngx_list_push(&r->headers_out.headers);
+		if (h == NULL) {
+			return NGX_ERROR;
+		}
+		h->hash = 1
+		h->key.len = sizeof("testHead") - 1;
+		h->key.data = (u_char*) "TestHead";
+		h->value.len = sizeof("TestValue") -1;
+		h->value.data = (uchar *) "TestValue";
+
+		ngx_http_output_filter 方法即可向客户端发送HTTP响应包体，
+			ngx_int_t ngx_http_output_filter(ngx_http_request_t *r, ngx_chain_t in);
+			ngx_chain_t 结构用于容纳ngx_buf_t缓冲区，
+	nginx内存管理
+		为了减少内存碎片数量，并通过统一管理来减少代码中出现内存泄漏的可能性
+		 ngx_buf_t *b = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
+		 b->start = (u_char*)ngx_pcalloc(p->pool, 128);
+		 b->pos = b->start;
+		 b->last = b->start;
+		 b->end = b->start + 128;
+		 b->temporary = 1;
+		 对上面操作的封装   ngx_buf_t *b = ngx_create_temp_buf(r->pool, 128);
+		 如果b->pos和b->last相等代表数据为空。
+
+		 r->pool每处理完一个request 进行内存释放。
+
+		 ngx_chain_t out;
+		 out.buf = b;
+		 out.next = NULL;
+		 ngx_http_output_filter(r, &out);
+		 这里异步操作，ngx_http_output_filter有可能缓冲区数据还没发送，但如果是栈数据函数返回导致数据释放。出现错误。
+
+
+		 简单实现
+		 static ngx_int_t ngx_http_myfirst_handler(ngx_http_request_t *r) {
+		 	if (!(r->method & (NGX_HTTP_GET | NGX_HTTP_HEAD)) {
+		 		return NGX_HTTP_NOT_ALLOWED;
+		 	}
+
+		 	ngx_int_t rc = ngx_http_discard_request_body(r);
+		 	if (rc != NGX_OK) {
+		 		return rc;
+		 	}
+
+		 	ngx_str_t type = ngx_string("test/plain");
+		 	ngx_str_t response = ngx_string("hello world");
+
+		 	r->header_out.status = NGX_HTTP_OK;
+		 	r->header_out.content_length_n = response.len;
+		 	r->header_out.content_type = type;
+
+		 	rc = ngx_http_send_header(r);
+		 	if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
+		 		return rc;
+		 	}
+
+		 	ngx_buf_t *b = ngx_create_temp_buf(r->pool, response.len)
+		 	if (b == NULL) {
+		 		return NGX_HTTP_INTERNAL_SERVER_ERROR;
+		 	}
+		 	ngx_memcpy(b->pos, response.data, response.len);
+		 	b->last = b->pos + response.len;
+		 	b->last_buf = 1; //申明这是最后一块缓冲区
+
+		 	ngx_chain_t out;
+		 	out.buf = b;
+		 	out.next = NULL;
+
+		 	return ngx_http_output_filter(r, &out);
+		}
+	将磁盘文件作为包体发送
+		sendfile系统调用不需要先把磁盘中数据读取到用户态再发送到网络中
+		与内存不同是ngx_buf_t缓冲区
+
+		ngx_buf_t有一个标志位in_file。设置为1表示发送的是文件而不是内存。从ngx_buf_t的file成员处获取实际的文件，file的类型时ngx_file_t。
+		struct ngx_file_s {
+			ngx_fd_t 	fd;
+			ngx_str_t 	name;
+			ngx_file_info_t info;
+			off_t sys_offset;
+			off_t sys_offset;
+
+			ngx_log_t *log;
+		}
+
+		ngx_buf_t *b
+		b  = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
+
+		u_char* filename = (u_char*)"/tmp/test.txt";
+		b->in_file = 1;
+		b->file = ngx_pcalloc(r->pool, sizeof(ngx_file_t));
+		b->file->fd = ngx_open_file(filename, NGX_FILE_RDONLY|NGX_FILE_NONBLOCK, NGX_FILE_OPEN, 0);
+		b->file->log = r->connection->log;
+		b->file->name.data = filename;
+		b->file->name.len = sizeof(filename) - 1;
+		if (b->file->fd <= 0) {
+			return NGX_HTTP_NOT_FOUND;
+		}
+
+		if (ngx_file_infp(filename, &b->file->info) == NGX_FILE_ERROR) {
+			return NGX_HTTP_INTERNAL_SERVER_ERROR;
+		}
+
+		r->headers_out.content_length_n = b->file->info.st_size;
+
+		b->file_pos = 0;
+		b->file_last = b->file->info.stz_size;
+
+		nginx会异步的将整个文件高效的发送给用户，但是我们必须要求http框架在发送完关闭已经打开的文件句柄。
+		ngx_range_header_filter用来处理HTTP请求头部range部分的
+		ngx_range_body_filter_module模块会按照range协议修改指向文件ngx_buf_t缓冲区的file_pos和file_last成员
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	HTTP_CONTENT_PHASE阶段开始处理请求。
+
+	HTTP框架定义的11个阶段
+
+	HTTP返回值
+
+	HTTP头定义
+
+
+
+
