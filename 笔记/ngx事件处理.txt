@@ -1,0 +1,28 @@
+事件模块
+  nginx是一个事件驱动架构的web服务器
+  ngx_event_t 事件 和 ngx_connection_t连接是处理TCP连接的基础数据，
+  ngx_events_module事件模块， 
+  ngx_event_core_module  ->   ngx_epoll_module模块
+
+  nginx定时器是由红黑树ngx_rbtree_t实现的，
+
+  ngx_process_events_and_timer方法处理网络事件、定时器事件和post事件的完整流程。
+
+
+
+启动时调用ngx_init_cycle方法解析配置项。一旦在nginx.conf配置文件中找到ngx_event_module感兴趣的"event{}"配置项， 
+
+	
+	ngx_handler_read_event:
+		将读事件添加到事件驱动模块中，这样该事件对应的TCP一担出现可读事件，就会调用该方法
+
+
+ngx_connection_t连接池
+	nginx在接收客户端连接时，所使用的ngx_connect_t结构体在启动阶段就分配好的，使用时从连接池获取即可。
+	每一个连接一定至少需要一个读事件和一个写事件
+
+	每个核心模块结构体  ngx_core_module_t都需要实现， HTTP模块实现ngx_http_module_t 8个参数解析方法。
+	这里event没有关心参数。
+
+	post事件
+	允许事件延后执行， nginx设计两个post队列，一个是监听连接的读事件构成的ngx_post_accept_event队列和一个是ngx_posted_events队列

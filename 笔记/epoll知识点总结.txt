@@ -1,0 +1,37 @@
+select和epoll区别
+	select：select选择句柄的时候，是遍历所有句柄，也就是说句柄有时间响应时，select需要遍历所有的句柄才能获取到那些句柄有事件通知，因此效率低。
+
+LT:水平触发
+	效率低、只要有数据没有被获取，内核就不断通知你。
+
+ET: 边缘触发
+	比LT少很多epoll系统调用，对编程要求特别高，需要要细致处理每个请求。
+	当EPOLLIN事件到达时，read fd中的数据并处理，read需要一直读，直到返回EAGAIN为止
+
+
+
+1、select函数
+	函数原型：
+		int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *acceptfdf,
+					struct timeval *timeout);
+	参数介绍：
+		nfds：集合中最大描述符值加1。
+		fd_set：位数组，每一位代表的是其对应位是否需要被检查， 支持大小与内核有关
+		readfs: 读事件
+		writenfs：
+		acceptnfs：
+		timeout： 超时时间
+	内核实现
+		select 对应于内核中的sys_select调用，需要将readfs,writenfs,acceptnfs三个参数拷贝到内核，然后对每个被set的描述符调用poll，并记录结果在fd_set，如果有事件发生，select会将实时结果写到用户空间并返回， 当轮询一遍后没有任何事件发生，如果指定了超时时间，则select会睡眠到超时，睡眠结束后再进行一次轮询。
+	性能分析
+		传统的select/poll每次调用都会线性扫描全部集合，导致效率呈线性下降。
+		poll执行分三部分：
+			1、将用户传入pollfd数组拷贝到内核空间。
+			2、检查每个文件描述符对应设备的状态，如果设备未准备就绪，加入等待队列，挂起当前进程等待，知道设备就绪或者超时，检查两遍，
+			3、将获取到的数据传送到用户空间并执行释放内存和剥离等待队列。向用户拷贝数据。
+2、epoll
+	执行epoll_create时， 创建了红黑树和就绪的list链表。
+	执行epoll_ctl时，如果添加，检查红黑树中是否存在，向内核注册回调函数，用于当中断事件来临时向准备就绪的list链表中插入数据。
+	执行epoll_wait时立刻返回准备就绪链表里的数据即可。
+
+
