@@ -1,0 +1,105 @@
+upstream机制的设计与实现
+	nginx访问上游服务器的流程大致可以分为以下6个阶段：
+		启动upstream机制、连接上游服务器，向上游服务器发送请求、接收上游服务器的响应包、处理接收到的响应包体、结束请求
+
+	上游服务器类型
+		ngx_http_proxy_module模块基于upstrean机制实现了HTTP的反向代理功能。也有基于类似ngx_http_memcached_module的模块基于upstream机制使得请求可以访问memcached服务器。
+		apache、tomcat这样的web服务器
+		memcached、cassandra这样的key-value存储系统
+		有或者是mongoDB、mysql这样的数据库。
+
+		每个客户端请求实际上可以向多个上游服务器发起请求。但是为了提供直接处理上游服务器响应的功能。
+
+		1、下游协议是HTTP，而上游协议可以试基于TCP的任何协议，这需要有一个适配的过程，所以upstream机制将上游的响应分为包头、包体两部分，包头部分必须由HTTP模块实现的process_header方法解析、处理、包体则由upstream不做任何修改的转发。
+		2、上下游网速匹配
+
+	ngx_http_upstream_t数据结构的意义
+
+
+	启动upstream
+	 	默认情况下请求的upstream成员只是NULL空指针，在设置upstream之前调用ngx_http_upstream_create方法从内存池创建。
+	 	ngx_http_init_upstream方法将根据ngx_http_upstream_conf_t中成员初始化upstream。同时开始连接上游服务器，以此开展整个upstream处理流程。
+	 	1、删除读事件、
+	 	2、查看ignore_client_abort是否检查下游客户端的TCP连接
+	 	3、调用create_request
+	 	4、设置ngx_http_upstream_cleanup方法
+	 	5、调用ngx_http_upstream_connect方法连接上游服务器。
+
+	 	static void ngx_http_upstream_send_request_handler(ngx_http_request_t *r,ngx_http_upstream_t *u) 
+	 	{
+	 		ngx_connection_t *c;
+	 		c = u->peer.connection;
+	 		//写事件的timeout标志位为1，表示想上游服务器发送的请求已经超时
+	 		if (c->write->timeout) {
+	 			ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_TIMEOUT);
+	 			return;
+	 		}
+
+	 		if (u->head_sent) {
+	 			u->write_event_handler = ngx_http_upstream_dummy_handler;
+	 			(void) ngx_handle_write_event(c->write, 0);
+
+	 			return;
+	 		}
+	 		ngx_http_upstream_send_request(r, u);
+	 	}
+
+	 接收上游服务器的响应头部
+	 	当请求全部发送给上游服务器时
+
+	 	包头相当于把不同的协议包件件的共同部分抽象出来，不同的数据包之间包头具备相同格式，服务器必须解析包头，包体不做格式上的要求
+	 	process_header处理包头时，需要开辟的内存大小只要能够容纳包头长度上线即可
+
+	 	以上游网速有点来转发响应
+	 		当buffering标志位为1，则允许upstream机制打开更大的缓冲区来缓存那些来不及向下游转发的响应，允许当达到内存构成缓冲区上线时以磁盘文件的形式来缓存来不及向下游转发的响应。
+	 		ngx_http_upstream_conf_T配置结构体中buffer_size指定的一块固定大小的缓冲区来转发响应，而当buffering为1时，则使用bufs成员指定的内存缓冲区来转发响应，当上游响应占满所有缓冲区时，使用最大不超过max_temp_file_size字节的临时文件来缓存响应。
+
+	 		涉及多个磁盘文件的使用
+	 		ngx_event_pipe_t结构体
+
+	 		struct ngx_event_pipe_t {
+	 			ngx_connection_t upstream;
+	 			ngx_connection_t downstream;
+
+	 			ngx_chain_t *free_raw_bufs; //接收自上游服务器的缓冲区链表
+
+	 			ngx_chain_t *in; //接收到上游响应缓冲区
+
+	 			ngx_chain_t **last_in;
+
+	 			ngx_chain_t **last_out;
+
+	 			ngx_chain_t *free;
+
+	 			ssize_t busy_size;
+	 			ngx_chain_t *busy;
+
+	 			ngx_event_pipe_input_filter_pt input_filter;
+	 			void *input_ctx;
+
+	 			ngx_event_pipe_output_filter_pt output_filter;
+	 			void *output_ctx;
+
+	 			..........
+
+	 		}
+
+	  		发送响应也是通过ngx_http_upstream_send_response方法执行的
+	  		1、首先ngx_http_send_header方法向下游客户端发送ngx_http_request_t结构体的header_out中设置的HTTP响应包头。
+	  		2、如果客户端请求中存在HTTP包体，而且包体已经存到临时文件中了这是会调用ngx_pool_run_cleanup_file方法清理临时文件，以释放不必要的资源。
+	  		3、初始化pipe。
+	  		4、分配preread_bufs预读缓冲区链表，预先读取了部分包体
+	  		5、设置上游读事件回调方法为ngx_http_upstream_process_upstream。
+	  		6、设置下游写事件回调方法
+	  		7、ngx_http_upstream_process_upstream处理转发响应包体
+
+	  	ngx_http_upstream_process_upstream
+
+
+
+
+
+
+
+
+

@@ -26,3 +26,40 @@ ngx_connection_t连接池
 
 	post事件
 	允许事件延后执行， nginx设计两个post队列，一个是监听连接的读事件构成的ngx_post_accept_event队列和一个是ngx_posted_events队列
+
+文件异步I/O
+	linux内核提供函数
+		int io_setup(unsigned nr_event, aio_content_t *ctxp)
+		int io_destroy(aio_content_t ctx)  ctx是文件异步I/O的上下文描述符
+		int io_submit(aio_content_t ctx, long nr, struct iocb *cbp[]);
+			提交文件文件异步IO
+		int io_cancel(aio_content_t ctx, struct iocb *iocb, struct ip_event *result);
+		int io_getevents(aio_content_t, long main_nr, long nr, struct io_event *event,
+						struct timesec *timeout);
+
+		struct iocb {
+			//存储着业务需要的指针，在nginx中这个字段存储着对于的ngx_event_t事件，与io_getevents方法中返回的io_event结构体的data成员是完全一致的。
+			u_int64_t aio_data;
+
+			u_int32_t PADDED(aio_key, aio_reservedl);
+			u_int16_t aio_lio_opcode;
+			int16_t aio_reqprio;
+			u_int32_t aio_files;
+			u_int64_t aio_buf;
+			u_int64_t aio_nbytes;
+			u_int64_t aio_offset;
+			u_int64_t aio_reserveds;
+			u_in32_t aio_flags
+			u_int32_t aio_resfd;
+		};
+
+		struct io_event {
+			uint64_t data;
+			uint64_t obj;
+			int64_t res;
+			int64_t res2;
+		};
+		
+
+
+	

@@ -1,0 +1,196 @@
+高级数据结构
+	任何复杂的程序都需要用到数组、链表、输等数据结构。
+	跨平台、使用C语言实现，这两个特点导致ngxin不宜使用第三发中间件提供的容器和算法。
+
+	6个容器
+		ngx_queue_t 双向链表
+			轻量级链表容日，与nginx内存池无关，这个链表不会负责分配内存来存放链表元素。
+		ngx_array_t动态数组
+			连续内存存放着大小相同的元素，下标检索效率高，负责容器元素内存的分配。
+		ngx_list_t 单向链表
+			负责元素内存的分配，不用完全连续内存来存储。
+		ngx_rbtree_t 红黑树
+			检索特定关键字时不需要像以上容器那样遍历。在检索、插入、删除元素方面非常高效，与散列表相比，ngx_rbtree_t还支持范围查询.
+		ngx_radix_tree_t 基数树
+			二叉查找树 必须以整型数据作为关键字。
+		支持通配符的散列表
+
+	ngx_queue_t 双向链表
+		链表适合频繁修改容器的场合。
+		实现排序功能，轻量级，支持两个链表间的合并。	
+		struct ngx_queue_s {
+			ngx_queue_t *prev;
+			ngx_queue_t *next;
+		}
+		因此、对于链表中的每个元素来说，空间上只会增加两个指针的内存消耗。
+
+		使用链表的例子：
+			首先定义使用链表元素的结构体
+			typedef struct {
+				u_char* str;
+				ngx_queue_t qEle;
+				int num;
+			} TestNode;
+
+			ngx_int_t comTestNode(const ngx_queue_t *a, const ngx_queue_t *b)
+			{
+				TestNode* aNode = ngx_queue_data(a, TestNode, qEle);
+				TestNode* bNode = ngx_queue_data(b, TestNode, qEle);
+
+				return aNode->num > bNode->num;
+			}
+
+			ngx_queue_t queueContainer;
+			ngx_queue_init(&queueContainer);
+
+			int i = 0;
+			TestNode node[5];
+			for (int 1 = 0; i<5; i++) {
+				node[i].num = i;
+			}
+
+			ngx_queue_insert_tail(&queueContainer, &node[0],qEle);
+			ngx_queue_insert_head(&queueContainer, &node[1],qEle);
+			ngx_queue_insert_tail(&queueContainer, &node[2],qEle);
+			ngx_queue_insert_after(&queueContainer, &node[3],qEle);
+			ngx_queue_insert_tail(&queueContainer, &node[4],qEle);
+
+			ngx_queue_t* q;
+			for (q = ngx_queue_head(&queueContainer);
+			       q != ngx_queue_sentinel(&queueContainer);
+			       q = ngx_queue_next(q))
+			{
+				TestNode* aNode = ngx_queue_data(q, TestNode, qEle);
+			}
+
+			ngx_queue_sort(&queueContainer, comTestNode);
+
+	ngx_array_t 动态数组
+		ngx_array_t是一个顺序容器。
+		访问速度快、元素个数具备不确定性、负责元素占用内存的分配。
+		struct  ngx_array_s {
+			void 			*elts; //首地址
+			ngx_uint_t 		nelts; //已使用个数
+			size_t 			size; //元素占用内存大小
+			ngx_uint_t 		nalloc; //当前能够容纳个数，即分配的内存
+			ngx_pool_t		*pool;  //内存池对象
+		};
+
+		接口
+		ngx_array_t *ngx_array_create(ngx_pool_t *p, ngx_uint_t n, size_t size);
+		void ngx_array_destroy(ngx_array_t *a);
+		void *ngx_array_push(ngx_array_t *a);
+		void *ngx_array_push_n(ngx_array_t *a, ngx_uint_t n);
+
+		static ngx_inline ngx_int_t
+		ngx_array_init(ngx_array_t *array, ngx_pool_t *pool, ngx_uint_t n, size_t size)
+		如果使用已经定义过的ngx_array_t结构体，可以先调用ngx_array_init初始化。
+		ngx_array_push，返回动态内存地址。
+	
+	ngx_rbtree_t 红黑树
+		上面的容器都是顺序容器，它们的检索效率通常情况下都比较差。
+		红黑树是一种平衡二叉树。
+			每个节点都有一个作为查找依据的关键码(key)，所有节点的key不相同
+			左子树上所有的节点key小于跟节点
+			右子树上所有的节点key大于根节点
+			左右子树都是二叉查找树。
+		平衡二叉树
+			在不断向二叉树中添加、删除节点时，二叉树通过自身形态变换，始终保持着一定程度上的平衡，即为平衡二叉查找树。
+
+		红黑树
+			红黑树特性：
+				1、节点是红色或黑色。
+				2、根节点是黑色。
+				3、所有叶子节点都是黑色。
+				4、每个红色节点的两个子节点都是黑色。
+				5、从任一节点到其叶子节点所有简单路径都包含相同树木的黑色节点。
+
+				从根节点最长路径不能大于最短路径的两倍。
+			struct ngx_rbtree_node_s {
+				ngx_rbtree_key_t 	key;
+				ngx_rbtree_node_t	*left;
+				ngx_rbtree_node_t	*right;
+				ngx_rbtree_node_t	*parent;
+				u_char				color;
+				u_char				data;
+			}
+
+		定义自己的结构
+			typedef struct {
+				ngx_rbtree_node_t	node;
+				ngx_uint_t  		num;
+			} TestRBtreeNode;
+
+			typedef struct ngx_rbtree_s  ngx_rbtree_t;
+
+			typedef void (*ngx_rbtree_insert_pt) (ngx_rbtree_node_t *root,
+			    ngx_rbtree_node_t *node, ngx_rbtree_node_t *sentinel);
+
+			struct ngx_rbtree_s {
+			    ngx_rbtree_node_t     *root;
+			    ngx_rbtree_node_t     *sentinel;
+			    ngx_rbtree_insert_pt   insert;
+			};
+
+		使用例子：
+			ngx_rbtree_t rbtree;
+			ngx_rbtree_node_t sentinel;
+
+			ngx_rbtree_init(&rbtree, &sentinel, ngx_rbtree_insert_value);
+
+			TestRBTreeNode rbTreeNode[10];
+			rbTreeNode[0].num = 1;
+			rbTreeNode[1].num = 2;
+			rbTreeNode[2].num = 3;
+			rbTreeNode[3].num = 4;
+			rbTreeNode[4].num = 5;
+			rbTreeNode[5].num = 6;
+			rbTreeNode[6].num = 7;
+			rbTreeNode[7].num = 8;
+			rbTreeNode[8].num = 9;
+			rbTreeNode[9].num = 10;
+
+			for (i = 0; i < 10; i++) {
+				rbTreeNode.node.key = rbTreeNode[i].num;
+				ngx_rbtree_insert(&rbtree, &rbTreeNode[i].node);
+			}
+
+			ngx_uint_t lookupkey = 13;
+			tmpnode = rbtree.root;
+			TestRBTreeNode *lookupNode;
+			while (tmpnode != sentinel) {
+				if (lookupkey != tmpnode->key) {
+					tmpnode = (lookupkey < tmpnode->key) ? tmpnode->left : tmpnode->right;
+					continue;
+				}
+				lookupNode = (TestRBTreeNode *)tmpnode;
+				break;
+			}
+			ngx_rbtree_delete(&rbtree, &loolupNode->node);
+			ngx_str_node_t
+
+	ngx_radix_tree_t 基数树
+		以32为整数作为key。
+
+
+	支持通配符的散列表
+		就是把基本散列表中元素的关键字。
+		ngx_hash_t
+
+		使用例子
+			typedef struct {
+				ngx_str_t servername;
+				ngx_int_t seq;
+			} TestWildcardHashNode;
+
+		ngx_hash_init_t hash;
+		ngx_hash_key_arrays_t ha;
+		ngx_hash_combined_t combinedHash;
+
+		ngx_memzero(&ha, sizeof(ngx_hash_key_arrays_t));
+		ha.temp_pool = ngx_create_pool(16384, cf->log);
+
+		ha.pool = cf->pool;
+
+
+

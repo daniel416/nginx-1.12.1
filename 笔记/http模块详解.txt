@@ -1,0 +1,286 @@
+HTTP模块需要完成哪些工作？
+	1、处理所有http{}块内的配置项，运行同一个http{}下出现多个server{}，location{}。
+	2、HTTP模块使用event模块监听server{}中的配置项。
+	3、HTTP框架需要有状态来分析接收到的TCP字符流是否是完整的HTTP包。
+	4、HTTP框架能够根据接收到的HTTP请求中的URI和HTTP头部，并以nginx。
+	5、向HTTP模块提供必要的工具和方法，可以处理网络I/O（读取HTTP包体、发送HTTP响应）和磁盘I/O。
+	6
+
+
+	HTTP框架的首要任务是通过调用ngx_http_module_t接口中的方法来管理所有HTTP模块的配置项，
+	server虚拟主机会以散列表的数据结构组织起来，以达到高效查询的目的。
+	location会以一个静态的二叉查找树组织起来，以达到高效查询的目的。
+	HTTP请求，都会以流水线的形式划分为多个阶段，以供HTTP模块插入到HTTP框架中来共同处理请求。
+
+	HTTP框架如何初始化的
+		NGX_HTTP_MODULE定义了ngx_http_module_t的ctx。
+		ngx_http_module_t接口完全是围绕着配置项来进行的，这与可定制性、可扩展性等架构特性是一致的。每个HTTP都将根据main、srv、loc这些不同级别的配置项来决定自己的行为。
+
+		对于模块的配置项在HTTP框架处理到某个阶段得到的配置可能不同， 如在找到合适的location前，如果试图取获取ngx_http_mytest_conf_t结构体，得到的是srv级别下的配置，而需找到location后，得到的是loc级别下的配置。
+
+		在解析main级别配置项时，如果发现server{}配置项，就会回调ngx_http_core_server方法。
+		在解析到server{}时也会建立ngx_http_ctx_conf_t结构体，
+		解析location也会建立ngx_http_ctx_conf_t结构体
+
+
+		处理HTTP新连接时，接收到HTTP头部并取到Host后，需要遍历ngx_http_core_main_conf_t的servers数组找到与server name匹配的虚拟主机配置块。如果虚拟主机太多效率低下。
+
+
+		typedef enum {
+			//在接收到完整的HTTP头部请求后
+		    NGX_HTTP_POST_READ_PHASE = 0,
+
+		    //在将请求的URI和location表达式匹配前，修改请求的URI(所谓重定向)。
+		    NGX_HTTP_SERVER_REWRITE_PHASE,
+
+		    //根据URI寻找匹配的location表达式，由ngx_http_core_module实现
+		    NGX_HTTP_FIND_CONFIG_PHASE,
+		    //需找到匹配请求后重定向
+		    NGX_HTTP_REWRITE_PHASE,
+		    //防止重定向死循环，进行重定向次数+1.
+		    NGX_HTTP_POST_REWRITE_PHASE,
+
+		    //决定请求访问权限前
+		    NGX_HTTP_PREACCESS_PHASE,
+
+		    //HTTP模块判断是否允许这个请求访问nginx
+		    NGX_HTTP_ACCESS_PHASE,
+		    //收尾，如果不允许访问，则向用户返回500
+		    NGX_HTTP_POST_ACCESS_PHASE,
+
+		    NGX_HTTP_TRY_FILES_PHASE,
+		    //处理HTTP请求内容的阶段
+		    NGX_HTTP_CONTENT_PHASE,
+
+		    NGX_HTTP_LOG_PHASE
+		} ngx_http_phases;
+
+	NGX_HTTP_POST_READ_PHASE阶段
+		当HTTP框架在建立的TCP连接上接收到客户发送的完整HTTP请求头部时，开始执行NGX_HTTP_POST_READ_PHASE阶段的checker方法
+
+		ngx_int_t ngx_http_core_generic_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
+		{
+			ngx_int rc = ph->handler(r);
+			/*执行下一个ngx_http_phases阶段中的
+			当阶段中后续还有HTTP模块设置了ngx_http_handler_pt处理方法，返回NGX_OK之后他们也得不到执行， 2 如果下一个NGX_HTTP_PHASES阶段中没有任何HTTP模块设置了ngx_http_handler_pt处理方法，将再次寻找之后的阶段，如此循环下去*/
+			if (rc == NGX_OK) {
+				r->phase_handler = ph->next;
+				return NGX_AGAIN;
+			}
+			/*顺序执行下一个ngx_http_handler_pt处理方法，这个顺序是ngx_http_phase_engine_t中所有ngx_http_phase_handler_t结构体组成的数组顺序*/
+			if (rc == NGX_DECLINED) {
+				r->phase_handler++;
+				return NGX_AGAIN;
+			}
+			/*当前的ngx_http_handler_pt处理方法尚未结束，当前阶段还有机会再次被调用*/
+			if (rc == NGX_AGAIN || rc == NGX_DONE) {
+				return NGX_OK;
+			}
+			/*结束请求*/
+			ngx_http_finalize_request(r, rc);
+
+			return NGX_OK;
+		}
+
+		目前官方的ngx_http_realip_module模块是从NGX_HTTP_POST_READ_PHASE阶段介入以处理HTTP请求的，他在postconfiguration方法是这样定义的
+		static ngx_int_t  ngx_http_realip_init(ngx_conf_t *cf) 
+		{
+			ngx_http_handler_pt *h;
+			ngx_http_core_main_conf_t *cmcf = ngx_http_conf_get_main_conf(cf, ngx_http_core_module);
+			h = ngx_array_push(&cmcf->phases[NGX_HTTP_POST_READ_PHASE].handlers);
+			if (h == NULL) {
+				return NGX_ERROR;
+			}
+
+			*h = ngx_http_realip_handler;
+
+
+			h = ngx_array_push(&cmcf->phases[NGX_HTTP_PREACCESS_PHASE].handlers);
+			if (h == NULL) {
+				return NGX_ERROR;
+			}
+			*h = ngx_http_realip_handler;
+
+			return NGX_OK;
+		}
+	NGX_HTTP_SERVER_REWRITE_PHASE阶段
+		NGX_HTTP_SERVER_REWRITE_PHASE阶段的checker方法时ngx_http_core_rewrite_phase。
+		NGX_DONE：还有机会被调用
+		NGX_DECLINED：当前ngx_http_handler_pt处理方法执行完毕，按照顺序执行下一个ngx_http_handler_pt处理方法。
+		NGX_AGAIN:
+		NG
+		NGX_ERROR: 
+
+	NGX_HTTP_FIND_CONFIG_PHASE 阶段
+		NGX_HTTP_FIND_CONFIG_PHASE 是一个关键阶段，这个阶段是不可以跳过的，也就是说，在ngx_http_phase_engine_t中，处理方法组成的数组必然有ngx_http_phase_engine_t阶段的处理方法，这是HTTP框架基于location设计的基石。
+
+		ngx_http_core_find_config_phase就是根据NGX_HTTP_SERVER_REWRITE_PHASE重写后的URI检索出匹配的location块，其原理就是从location组成的静态二叉查找树种快速检索。
+
+	NGX_HTTP_REWRITE_PHASE阶段
+		NGX_HTTP_FIND_CONFIG_PHASE阶段检索到location后，有机会再次利用rewrite重写URL，这个工作在该阶段完成
+
+	NGX_HTTP_POST_REWRITE_PHASE 阶段
+		只能由HTTP框架实现，检查重写次数不能超过10次。
+
+	NGX_HTTP_PREACCESS_PHASE阶段
+		NGX_HTTP_PREACCESS_PHASE阶段一般用于对当前请求进行限制性处理。
+
+	NGX_HTTP_ACCESS_PHASE阶段
+		NGX_HTTP_ACCESS_PHASE阶段和NGX_HTTP_CORE_ACCESS_PHASE阶段大不相同，这主要体现在它的checker方法是ngx_http_core_access_phase上，这也就致使在NGX_HTTP_ACCESS_PHASE阶段ngx_http_handler_pt处理方法的返回值有了新的意义
+
+		NGX_OK：如果在ngxin.conf配置了satisfy all，那么按照顺序执行下一个ngx_http_handler_pt处理方法；如果配置了satisfy any，那么将执行下一个ngx_http_phases阶段的第一个ngx_http_handler_pt处理方法。
+
+		NGX_DECLINED：按照顺序执行下一个ngx_http_handler_pt处理方法。
+		NGX_AGAIN:
+		NGX_DONE: 当前的ngx_http_handler_pt处理方法尚未结束， 这意味着该处理方法在当前阶段中有机会再次被调用，这是会把控制权交还给事件模块。
+		NGX_HTTP_FORBIDDEN:
+		NGX_HTTP_UNAUTHORIZED:  和配置项satisfy all 有关，如果是all，调用ngx_http_finalize_request结束
+		NGX_ERROR:调用ngx_http_finalize_request结束
+
+	NGX_HTTP_POST_ACCESS_PHASE阶段
+		检查http_request_t请求中的access_code成员，当其不为0时就结束请求，没有访问权限，继续执行下一个ngx_http_handler_pt
+	NGX_HTTP_TRY_FILES_PHASE
+		框架实现
+
+	NGX_HTTP_CONTENT_PHASE阶段
+		这是一个核心HTTP阶段，可以说大部分HTTP模块都会在此阶段重新定义nginx服务器的行为，
+		以上9个阶段专注基础性工作：rewrite URL、找到location、判断是否具有访问权限、try_files功能优先读取静态文件资源文件。
+
+		NGX_HTTP_CONTENT_PHASE阶段与其他阶段不相同的是，它向HTTP模块提供两种介入该阶段的方式，第一种与其他10个阶段一样。第二种是本阶段独有的，把希望处理请求的ngx_http_handler_pt方法设置到location相关的ngx_core_loc_conf_t结构体的handler指针中。
+
+		第一种：HTTP模块介入其他10阶段的唯一方式，是通过在必定会被调用的postconfiguration方法向全局的ngx_http_core_main_conf_t结构体的phases[NGX_HTTP_CONTENT_PHASE]动态数组添加处理方法来达成
+
+		第二种方式通过设置ngx_http_core_loc_conf_t结构体的handler指针来实现， 每个location都对应着一个独立的ngx_http_core_loc_conf_t结构体。 二卡一在ngx_command_t的某个配置项的回调方法添加处理方法，将当前location块所属的ngx_http_core_loc_conf_t结构体中的handler设置为ngx_http_handler_pt处理方法，这样做的好处是ngx_http_handler_pt处理方法不再应用于所有的HTTP请求，仅当用户请求的URI匹配location时才会被调用。
+		如果location配置多个handler，后面的handler将覆盖前面的handler。
+
+		第一种方式下，ngx_http_handler_pt无论任何返回值，都会直接调用ngx_http_finalize_request,但是未必会直接结束请求
+	NGX_HTTP_LOG_PHASE阶段
+		记录日志
+
+
+	HTTP的初始化流程
+		初始化流程在ngx_http_module模块中，当配置文件出现http{}配置时就会调用ngx_http_block方法，这个方法包括HTTP框架的完整初始化流程，
+		初始化步骤：
+			1、按照ngx_modules数组的顺序，由0开始依次递增设置所有HTTP模块的ctx_index字段，这个字段将决定HTTP模块应用于请求的顺序。
+			2、解析到http{}产生一个ngx_http_conf_ctx_t结构体，同事初始化它的main_conf,srv_conf,loc_conf3个指针数组，数组的容量就是第一步获取到HTTP模块数量。
+			3、依次调用所有HTTP模块的create_main_conf方法，产生的配置结构体指针按照各模块ctx_index字段指定的顺序放入ngx_http_conf_ctx_t结构体的main_conf数组。
+			4、依次调用所有HTTP模块的create_srv_conf方法，产生的配置结构体指针将按照各模块ctx_index字段指定的顺序放入ngx_http_conf_ctx_t结构体的srv_conf数组。
+			5、依次调用所有HTTP模块的create_loc_conf方法，产生的配置结构体指针将按照各模块ctx_index字段指定的顺序放入ngx_http_conf_ctx_t结构体的loc_conf数组。
+			6、依次调用所有HTTP模块的preconfiguration。
+			7、解析http{}块下的main级别配置项。
+			注意：在解析main界别配置项时，如果遇到server{}配置块，将会触发ngx_http_core_server方法，并开始解析server级别下的配置项，如果遇到location{}配置块
+			8、依次调用所有HTTP模块的init_main_conf方法。
+			9、调用ngx_http_merge_servers方法合并配置项。
+			10、创建location块构造静态二叉平衡树。
+			11、调用http的postconfiguration方法向这个7个阶段添加处理方法，需要调用http_init_phases方法来初始化这7个动态数组。
+			12、 调用所有的HTTP模块的postconfiguration将处理方法添加到7个HTTP阶段中。
+			13、 遍历所有添加的处理方法，构造有序的phase_engine.handlers数组。
+			14、构造server虚拟主机构成的支持通配符散列表。
+			15、设置新俩捏事件的回调方法为ngx_http_init_connect。
+
+	HTTP框架的执行流程
+		大概流程:先与客户端建立TCP连接，接收HTTP请求行、头部并解析，在根据nginx.conf配置文件找到一些HTTP模块，使其一次合并着处理这个请求。
+		HTTP框架还提供接收HTTP包体、发送HTTP响应，派生子请求等工具和方法。
+
+		对于TCP网络事件，可以粗略的分为可读事件和可写事件，可读事件又可细分为接受到SYN包带来的新连接事件、接受FIN包带来的连接关闭事件，以及套接字缓冲区上真正收到TCP流，
+		可写事件 NGINX提供限制速度功能，有时可写事件触发时未必可以去发送响应。
+
+		每一个事件都是由ngx_event_t结构体表示的，而TCP连接则是由ngx_connection_t结构体表示，HTTP请求毫无疑问是基于TCP连接实现的，每个TCP连接包括一个读事件和一个写事件，他们放在ngx_connection_t结构体的read和write，通过事件模块提供的ngx_handle_read_ervent和ngx_handle_write_event可以添加到epoll中，在满足条件时，nginx进程会调用ngx_event_t事件的handler回调方法执行业务。
+		通过ngx_add_time方法可以将上面的读事件或者写事件添加到定时器中，在满足超时条件后，nginx进程同样会调用ngx_event_t事件的handler回调方法执行业务。
+
+		HTTP框架需要完成的工作：集成事件驱动机制、与HTTP模块共同处理请求、subrequest功能有关、提供基本的工具接口。
+
+		新连接建立时的行为
+			当nginx接收到用户发起TCP连接的请求时，事件驱动框架会负责把TCP链接建立起来，如果TCP连接成功建立，HTTP框架就会介入请求的处理
+			ngx_event_accept方法调用ngx_listening_t监听结构体的handler方法
+			void ngx_http_init_connection(ngx_connection_t *c)
+			1、将新建立的连接C的可读事件处理方法设置为ngx_http_init_request，当TCP连接上的数据送达服务器后，ngx_http_init_request方法会被调用。
+			2、如果新连接的读事件ngx_event_t结构体中的标志位ready为1，实际上表示这个连接对应的套接字缓存上已经有用户发送来的数据。调用ngx_http_init_request。
+			3、通过ngx_add_timer方法将读事件添加到定时器。
+			4、ngx_handle_read_event方法把链接c的读事件添加到epoll中。
+
+		第一次接收数据
+			static void ngx_http_init_request(ngx_event_t *rev)
+			HTTP框架并不会再连接建立成功后就开始初始化请求，而是在这个连接对应的套接字缓冲区上确实接收到了用户发送来的请求内容才进行。
+			当TCP连接建立成功同时也出现了可读事件，在套接字设置了deferred选项时，内核仅在套接字确实收到请求时才会通知epoll调度时间的回调方法，ngx_http_init_request和ngx_http_init_connect方法都是由两个事件触发的
+			ngx_http_init_request主要完成：对请求构造ngx_http_request结构体并初始化部分参数、修改读事件回调方法为ngx_http_process_request_line并调用该方法开始接受并解析HTTP请求。
+			1、检查读事件是否超时，不应该继续处理调用ngx_http_close_request方法关闭。
+			2、创建ngx_http_request_t结构体并存放在ngx_connect_t的data结构体，并将ngx_connect_t结构体使用次数requests成员+1
+			3、表里ngx_listen_t结构体的servers指向数组，找到默认server虚拟主机对应的ngx_http_core_ser_conf_t配置结构体。
+			4、通过获取到的ngx_http_core_ser_conf_t结构体初始化ngx_http_request_t结构体中main_conf/srv_conf/loc_conf对应的配置项。
+			5、第一次读事件的回调方法时ngx_http_init_request，它仅用于初始化请求，之后的读事件意味着只需要处理数据设置回调方法为ngx_http_process_request_line接收并解析出完整的HTTP请求行。
+			6、读事件触发，通过ngx_connect_t的内存池分配一块内存，并将ngx_http_request_t结构体的header_in指向和ngx_connection_t结构体的buffer指针共同指向该区域。
+			7、ngx_http_request_t结构体同样有一个内存池HTTP模块更应该在ngx_http_request_t结构体的pool内存池申请新的内存，请求结束则收回。
+			8、初始化ngx_http_request_t结构体的部分容器。
+			9、分配ngx_http_max_module个成员指针存放请求上下文结构。
+			10、初始化处理时间
+			11、调用ngx_http_process_request_line方法开始接收、解析HTTP请求
+
+		接收HTTP请求行
+			ngx_http_process_request_line会被多次调用
+			完成后需要初始化ngx_http_module结构体相关参数
+		接收HTTP头部
+			ngx_http_process_request_headers方法开始接收HTTP头部
+			都需要去ngx_http_find_virtual_server方法找到对应的虚拟主机配置块。
+		处理HTTP请求
+			ngx_http_process_request方法开始处理请求。
+			1、定时器中把当前连接的读事件移除。
+			2、从新设备当前连接的读写时间回调方法，ngx_http_request_handler方法。
+			3、不需要再读设备读回调函数不做任何事
+			4、判断internal是否为1，表示需要做内部跳转。
+
+
+			设置ngx_http_request_t结构体的write_event_handler成员为ngx_http_core_run_phases方法。
+			typedef struct {
+				ngx_http_phase_engine_t phase_engine;
+			};
+			typedef struct {
+				ngx_http_phase_handler_t *handlers;
+			} ngx_http_phase_engine_t;
+
+			struct ngx_http_phase_handler_t {
+				ngx_http_phase_handler_pt checker;
+				ngx_http_handler_pt handler;
+			};
+			可以看到，根据ngx_http_core_main_conf_t结构体的phase_engine成员即可一次调用各个HTTP模块来共同处理一个请求，
+			ngx_http_request_t结构体的phase_handler序号决定执行到哪一个阶段，以及下一阶段应当执行哪个HTTP模块实现的内容
+
+			当下次调用时调用ngx_http_request_handler方法开始处理请求
+			ngx_http_process_request方法负责在接收完HTTP头部后，第一次与各个HTTP模块共同按照阶段处理。
+			ngx_http_process_handler方法，在第一次没能处理完请求，这个请求上的事件再次被触发，就赢该方法继续处理。
+			check方法主要任务在于，根据phase_handler执行某个HTTP模块实现的回调方法，并根据方法的返回值决定当前阶段是否完全结束。
+
+		subrequest与post
+			nginx使用的完全无阻塞的事件驱动框架是难以编写功能负责的模块的，一个请求在处理一个TCP连接时，键需要处理连接上的可读、可写以及定时器事件。
+
+
+			子post请求的设计就是用于实现subrequest子请求机制的，如果一个请求具备了post请求，并且HTTP框架保证post请求在当前请求执行完毕后执行，
+			struct ngx_http_post_request_t {
+				ngx_http_request_t *request;
+				ngx_http_posted_request_t *next;
+			}
+			posted_request、parent、main来保证
+			posted_request通过单链表组织
+			main指向原始请求
+			count引用计数，每当派生出子请求时，原始请求的count成员会加1,在真正销毁请求前，可以通过检查count成员是否为0以确认是否销毁元素请求。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

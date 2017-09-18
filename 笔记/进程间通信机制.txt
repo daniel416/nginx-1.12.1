@@ -1,0 +1,214 @@
+进程间通信机制
+	linux提供了多种进程间传递消息的方式，如共享内存、套接字、管道、消息队列、信号等。
+	每种方式都有优缺点		
+
+	管道pipe及有名管道：
+		管道可用于具有亲缘关系进程间的通信，有名管道克服了管道没有名字的相知，因此除具有管道所具有的功能外，还允许无亲缘关系进程间的通信。
+
+		信号： 信号时比较复杂的通信方式，用于通知接收进程有某种事件发送，除了用于进程间通信外，进程还可以发送信号给进程本身。
+
+		消息队列：消息队列是消息的消息链接表，有权限的进程可以向队列中添加消息，被赋予权限的进程则可以读走队列中的消息，消息队列克服了信号承载信息量少，管道只能承载五个十字节流以及缓冲区大小受限制的特点、
+
+		共享内存： 使得多个进程可以访问同一块内存空间，是最快的可用IPC形式，是针对其他通信机制运行效率较低而设计的。往往与其他通信机制、如信号量结合使用，来达到进程间的同步及互斥。
+
+		信号量：主要作为进程间以及同一进程不同线程之间的同步手段。
+
+		套接字：可以用于不同机器之间的进程间通信。
+
+	nginx框架使用3种消息传递方式
+		共享内存、套接字、信号
+		进程访问共享资源时，还需要提供一种机制使各个进程有序、安全地访问资源，避免并发访问带来的未知结果
+		ngxin使用3中同步方式：原子操作、信号量、文件锁， 基于原子变量实现的自旋锁。
+		ngxin是异步，不应该阻塞当前进程，所以不要随意地使用信号量互斥锁，这会使得worker进程在得不到锁时进入睡眠状态。
+
+		nginx使用原子操作，信号量和文件锁实现了一套ngx_shmtx_t互斥锁。当操作系统支持原子操作时，ngx_shatx_t就由原子变量实现，否则将由文件锁来实现。
+
+
+	共享内存
+		通过mmap或者shmget系统调用在内存中创建了一块连续的线性地址空间，通过munmap或者shmdt系统调用可以释放这块内存。
+
+		typedef struct {
+			u_char *addr;
+			size_t size;
+			ngx_str_t name;
+			ngx_log_t log;
+			ngx_uint_t exists;
+		} ngx_shm_t;
+
+		操作方法： 
+			ngx_shm_alloc用于分配新的共享内存。
+			ngx_shm_free释放已经存在的共享内存
+
+		void* mmap(void *start, size_t length, int prot, int flags,
+						int fd, off_t offset);
+		mmap可以将磁盘文件映射到内存中，直接操作内存是linux内核负责同步内存和磁盘中数据
+		fd参数就指向需要同步的磁盘文件，而offset则代表从文件的这个偏移量开始共享。
+		当flags参数中加入MAP_ANON或者MAP_ANONYMOUS参数表示不使用文件映射方式，这时fd和offset参数就没意义。
+		length：共享内存开辟空间大小
+		prot：操作这段共享内存的方式
+		start：参数说明希望的共享内存其实映射地址，通常都会把start设为NULL空指针
+
+		ngxin进程间共享数据的主要方式就是使用共享内存（使用共享内存时，nginx一般由master进程创建，在master进程fork出worker子进程后，所有的进程开始使用这块内存中的数据。
+
+		ngx_shm_alloc使用三种方式实现（不映射文件使用mmap分配共享内存、以/dev/zero文件使用mmap映射共享内存、用shmget调用来分配共享内存
+
+		作为web服务器，nginx具有统计整个服务器中HTTP连接状况的功能，如统计某时刻下nginx已处理过的连接状况 
+		统计ngx_http_stub_status_module模块连接状况
+		//已经建立成功过的TCP连接数
+		ngx_atomic_t ngx_stat_accepted0;
+		ngx_atomic_t *ngx_stat_accepted = &ngx_stat_accepted0;
+
+		//已经从ngx_cycle_t核心结构体的free_connections连接池获取到的活跃连接数
+		ngx_atomic_t ngx_stat_active0;
+		ngx_atomic_t *ngx_stat_active = &ngx_stat_active0;
+
+		//连接建立成功且获取到ngx_connection_t结构体后，已经分配过内存池，并且初始化读写事件的连接数
+		ngx_atomic_t ngx_stat_handled0;
+		ngx_atomic_t *ngx_stat_handler = &ngx_stat_handled0;
+
+		//已经由HTTP模块处理过的连接数
+		ngx_atomic_t ngx_stat_requests0;
+		ngx_atomic_t *ngx_stat_requests = &ngx_stat_requests0;
+
+		//正在接受TCP流的连接数
+		ngx_atomic_t ngx_stat_reading0;
+		ngx_atomic_t *ngx_stat_reading = &ngx_stat_reading0;
+
+		//正在发送TCP流的连接数
+		ngx_atomic_t ngx_stat_writing0;
+		ngx_atomic_t *ngx_stat_writing = &ngx_stat_writing0;
+
+	初始化
+		ngx_shm_t shm;
+
+		/*计算出需要使用的共享内存大小。为什么每个统计成员需要128字节呢，这似乎太大了，nginx考虑了CPU的二级缓存，在目前许多CPU架构下缓存行的大小128字节，而下面需要统计的变量都访问非常频繁的成员，同时他们占用内存又非常少，所以采用128字节*/
+		c1 = 128;
+		size = c1    //ngx_accept_mutex
+				+ c1	//ngx_connection_counter
+				+ c1;   //ngx_temp_number
+		/*编译了stat_stub模块 改宏打开*/
+	#if (NGX_STAT_SUB)
+			size += c1 
+					+ c1
+					+ c1
+					+ c1
+					+ c1
+					+ c1;
+	#endif
+		shm.size = size;
+		shm.name.len = sizeof("nginx_shared_zone");
+		shm.name.data = (u_char *)"nginx_shared_zone";
+		shm.log = cycle->log;
+
+		if (ngx_shm_alloc(&shm) != NGX_OK) {
+			return NGX_ERROR;
+		}
+
+		shared = shm.addr;
+		ngx_accept_mutex_ptr = (ngx_atomic_t) shared;
+		//告诉nginx这把锁不可以使进程进入睡眠状态
+		ngx_accept_mutext.spin = (ngx_uint_t) -1;
+		ngx_connection_counter = (ngx_atomic_t *) shared = 1*c1;
+	#if (NGX_STAT_SUB)
+		ngx_stat_accepted = (ngx_atomic_t *) shared = 3*c1;
+		ngx_stat_active = (ngx_atomic_t *) shared = 4*c1;
+		ngx_stat_handler = (ngx_atomic_t *) shared = 5*c1;
+		ngx_stat_requests = (ngx_atomic_t *) shared = 6*c1;
+		ngx_stat_reading = (ngx_atomic_t *) shared = 7*c1;
+		ngx_stat_writing = (ngx_atomic_t *) shared = 8*c1;
+	#endif
+
+
+	操作
+		ngx_atomic_fetch_add(ngx_stat_reading, 1);
+		ngx_atomic_fetch_add(ngx_stat_reading, -1);
+
+
+
+原子操作
+	能够执行原子操作的原子变量只有整数，包括无符号整数ngx_atomic_uint_t和有符号整数ngx_atomic_t
+	这两种类型都是用volatile关键字告诉C编译器不要做优化。
+
+	想要使用原子操作来修改、获取整型变量不能直接使用加减号，要使用nginx提供的两个方法：
+		ngx_atomic_cmp_set 和ngx_atomic_fetch_add 两个方法都可以用来修改原子变量的值
+
+	当无法实现原子操作时，就只用使用volatile关键字在C语言级别上模拟原子操作，实际上目前绝大多树体系架构都是支持原子操作的。
+
+自旋锁
+	基于原子操作，nginx实现了一个自旋锁，自旋锁是一个非睡眠锁，
+	当某个进程试图获取自旋锁，当发现锁已经被其他进程获得时
+	自旋锁主要是为多处理起操作系统设置的，他要解决的共享资源保护场景就是进程使用锁的时间非常短。
+
+nginx频道
+	ngx_channel_t频道是ngxin master进程与worker进程之间通信的常用工具，它是使用本机套接字实现的下面socketpair方法，它用于创建父子进程间使用的套接字
+		int socketpair(int d, int type, int protocol, int sv[2]);
+	创建一对关联的套接字sv[2],下面依次介绍它的4个参数
+	d:		表示域，在linux通常取值为AF_UNIX；
+	type：	取值为SOCK_STREAM或SOCK_DGRAM表示使用的是TCP还是UDP
+	protocol：传递0
+	sv[2]:是一个含有两个元素的整型数组，实际上就是两个套接字， socketpair返回0时，sv[2]着两个套接字创建成功，
+	两个套接字具备下列关系：
+		向sv[0]套接字写入数据将可以从sv[1]套接字中读取到刚刚写入的数据，
+		向sv[1]套接字写入数据将可以从sv[0]套接字中读取到刚刚写入的数据
+	通常在父子进程通信前，调用socketpair方法创建这样一组套接字，在fork方法创建出子进程后，在父进程关闭sv[1]套接字，使用sv[0]套接字向子进程发送数据以及接受子进程发送来的数据。
+	子进程关闭sv[0]套接字，使用sv[1]来接受父进程发来的数据，也可以向父进程发送数据。
+
+	typedef struct  {
+		ngx_uint_t command;
+		ngx_pid_t pid;
+		ngx_int_t slot;
+		ngx_fd_t fd;
+	} ngx_channel_t
+	通过函数ngx_write_channel和ngx_read_channel发送ngx_channel_t消息
+
+	worker进程通过ngx_add_channel_event添加到epoll中
+
+信号
+	typedef struct {
+		int sinno;
+		char *signame;
+		char *name
+		void (*handler) (int sinno);
+	} ngx_signal_t;
+
+	这个新启动的nginx进程会向实际运行的ngxin服务进程发送sighup信号，执行这个命令后拉起的nginx进程并不会重启服务器，而是仅用发送信号，在ngx_get_options方法中重置ngx_signal全部变量，而main方法在检查到非0时就会调用ngx_signal_process方法向正在运行的nginx服务发送信号。
+
+
+文件锁：
+	linux内核提供了基于文件的互斥锁，而nginx框架封装了3个方法，提供给nginx模块使用文件互斥锁来保护共享数据，
+	int fcntl(int fd, int cmd, stuct flock *lock);
+	参数：
+		fd是打开的文件句柄。
+		cmd表示执行的锁操作
+		lock描述这个锁的信息
+		fd必须是已经打开的文件句柄，实际上nginx.conf文件中的lock_file配置项指定的文件路径，也就是用于文件互斥锁的，这个文件被打开后得到的句柄，将会作为fd的参数传递给fcntl，提供一种锁机制。
+		cmd在nginx会有两个值 F_SETLK和F_SETLWK表示试图获取互斥锁 F_SETLK不会阻塞立即返回获取互斥锁失败
+
+		struct flock {
+			short l_type;
+			short l_whence;
+			long  l_start;
+			long l_len;
+			long l_pid;
+		};
+		从flock结构体中可以看出，文件锁的功能绝不仅仅局限普通互斥锁，他还可以锁住文件中的部分内容，单nginx封装文件锁用于保护代码段的顺序执行（在进程进行负载均衡时，使用互斥锁保证同一时刻仅有一个worker进程可以处理新的TCP连接，使用方式简单得多：一个lock_file文件对用一个全局互斥锁，而且他对master进程或者worker进程都生效。
+		nginx封装三个方法：
+			ngx_trylock_fd、ngx_lock_fd、ngx_unlock_fd
+
+
+互斥锁
+	基于原子操作、信号量以及文件锁，nginx在更高层次封装了一个互斥锁
+	方法：
+		ngx_shmtx_create
+		ngx_shmtx_destory
+		ngx_shmtx_trylock
+		ngx_shmtx_lock
+		ngx_shmtx_unlock
+
+	第一种实现  当不支持原子操作时，会使用文件锁来实现ngx_shmtx_t互斥锁，这是仅有fd和name成员
+	第二种实现  支持原子操作却不支持信号量
+	第三者操作	支持原子操作，操作系统也支持信号量
+
+
+
+
